@@ -2,7 +2,7 @@ import os
 import base64
 import io
 import hashlib
-from flask import Flask, request, jsonify, render_template, send_from_directory, redirect
+from flask import Flask, request, jsonify, render_template, send_from_directory, Response
 from dotenv import load_dotenv
 from google import genai
 from google.genai import types
@@ -85,10 +85,13 @@ def storage_delete(filename: str):
 
 
 def storage_url(filename: str) -> str:
-    if USE_R2:
-        return f"{_public_url}/{filename}"
-    else:
-        return f"/rooms/{filename}"
+    return f"/rooms/{filename}"
+
+
+def storage_fetch(filename: str) -> bytes:
+    """Fetch raw bytes for a stored file (R2 only)."""
+    resp = _r2.get_object(Bucket=_bucket, Key=filename)
+    return resp["Body"].read()
 
 
 # ---------------------------------------------------------------------------
@@ -147,7 +150,8 @@ def list_rooms():
 @app.route("/rooms/<filename>")
 def serve_room(filename):
     if USE_R2:
-        return redirect(storage_url(filename))
+        data = storage_fetch(filename)
+        return Response(data, mimetype="image/jpeg")
     return send_from_directory(ROOMS_DIR, filename)
 
 
