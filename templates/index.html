@@ -124,13 +124,12 @@
     }
 
     // Select a saved room by fetching it as a blob
-    async function selectSavedRoom(filename) {
-      const res = await fetch(`/rooms/${filename}`);
+    async function selectSavedRoom(filename, imageUrl) {
+      const res = await fetch(imageUrl);
       const blob = await res.blob();
       files.room = blob;
-      const url = URL.createObjectURL(blob);
-      showPreview("room", url);
-      // highlight selected thumbnail
+      const objectUrl = URL.createObjectURL(blob);
+      showPreview("room", objectUrl);
       document.querySelectorAll(".room-thumb").forEach(t => t.classList.remove("selected"));
       document.querySelector(`.room-thumb[data-filename="${filename}"]`)?.classList.add("selected");
       updateSubmitState();
@@ -154,15 +153,15 @@
       savedRoomsGrid.innerHTML = "";
       if (roomFiles.length === 0) { savedRoomsSection.hidden = true; return; }
       savedRoomsSection.hidden = false;
-      roomFiles.forEach(filename => {
+      roomFiles.forEach(({ filename, url }) => {
         const wrap = document.createElement("div");
         wrap.className = "room-thumb";
         wrap.dataset.filename = filename;
 
         const img = document.createElement("img");
-        img.src = `/rooms/${filename}`;
+        img.src = url;
         img.alt = "Saved room";
-        img.addEventListener("click", () => selectSavedRoom(filename));
+        img.addEventListener("click", () => selectSavedRoom(filename, url));
 
         const del = document.createElement("button");
         del.className = "thumb-delete";
@@ -179,7 +178,7 @@
     async function loadSavedRooms() {
       const res = await fetch("/rooms");
       const data = await res.json();
-      renderSavedRooms(data.rooms);
+      renderSavedRooms(data.rooms); // each item: { filename, url }
     }
 
     // Wire up each drop zone

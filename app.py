@@ -2,7 +2,7 @@ import os
 import base64
 import io
 import hashlib
-from flask import Flask, request, jsonify, render_template, send_from_directory
+from flask import Flask, request, jsonify, render_template, send_from_directory, redirect
 from dotenv import load_dotenv
 from google import genai
 from google.genai import types
@@ -25,9 +25,75 @@ COMPOSITE_PROMPT = (
 )
 
 MAX_DIMENSION = 2048
-ROOMS_DIR = os.path.join(os.path.dirname(__file__), "static", "saved_rooms")
-os.makedirs(ROOMS_DIR, exist_ok=True)
 
+# ---------------------------------------------------------------------------
+# Storage — uses Cloudflare R2 when env vars are present, local disk otherwise
+# ---------------------------------------------------------------------------
+
+_R2_VARS = ("R2_ACCOUNT_ID", "R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY", "R2_BUCKET_NAME", "R2_PUBLIC_URL")
+USE_R2 = all(os.environ.get(v) for v in _R2_VARS)
+
+if USE_R2:
+    import boto3
+    from botocore.config import Config as BotoConfig
+
+    _r2 = boto3.client(
+        "s3",
+        endpoint_url=f"https://{os.environ['R2_ACCOUNT_ID']}.r2.cloudflarestorage.com",
+        aws_access_key_id=os.environ["R2_ACCESS_KEY_ID"],
+        aws_secret_access_key=os.environ["R2_SECRET_ACCESS_KEY"],
+        config=BotoConfig(signature_version="s3v4"),
+        region_name="auto",
+    )
+    _bucket = os.environ["R2_BUCKET_NAME"]
+    _public_url = os.environ["R2_PUBLIC_URL"].rstrip("/")
+else:
+    ROOMS_DIR = os.path.join(os.path.dirname(__file__), "static", "saved_rooms")
+    os.makedirs(ROOMS_DIR, exist_ok=True)
+
+
+def storage_save(filename: str, data: bytes):
+    if USE_R2:
+        _r2.put_object(Bucket=_bucket, Key=filename, Body=data, ContentType="image/jpeg")
+    else:
+        path = os.path.join(ROOMS_DIR, filename)
+        if not os.path.exists(path):
+            with open(path, "wb") as f:
+                f.write(data)
+
+
+def storage_list() -> list[str]:
+    """Return filenames, newest first."""
+    if USE_R2:
+        resp = _r2.list_objects_v2(Bucket=_bucket)
+        objects = resp.get("Contents", [])
+        objects.sort(key=lambda o: o["LastModified"], reverse=True)
+        return [o["Key"] for o in objects]
+    else:
+        files = [f for f in os.listdir(ROOMS_DIR) if f.endswith(".jpg")]
+        files.sort(key=lambda f: os.path.getmtime(os.path.join(ROOMS_DIR, f)), reverse=True)
+        return files
+
+
+def storage_delete(filename: str):
+    if USE_R2:
+        _r2.delete_object(Bucket=_bucket, Key=filename)
+    else:
+        path = os.path.join(ROOMS_DIR, filename)
+        if os.path.exists(path):
+            os.remove(path)
+
+
+def storage_url(filename: str) -> str:
+    if USE_R2:
+        return f"{_public_url}/{filename}"
+    else:
+        return f"/rooms/{filename}"
+
+
+# ---------------------------------------------------------------------------
+# Image helpers
+# ---------------------------------------------------------------------------
 
 def _read_upload(file_storage) -> tuple[bytes, str]:
     data = file_storage.read()
@@ -51,15 +117,15 @@ def _bytes_to_base64_data_url(data: bytes, mime: str) -> str:
 
 
 def _save_room(data: bytes) -> str:
-    """Save room image to disk, deduplicated by content hash. Returns filename."""
     digest = hashlib.sha1(data).hexdigest()[:16]
     filename = f"{digest}.jpg"
-    path = os.path.join(ROOMS_DIR, filename)
-    if not os.path.exists(path):
-        with open(path, "wb") as f:
-            f.write(data)
+    storage_save(filename, data)
     return filename
 
+
+# ---------------------------------------------------------------------------
+# Routes
+# ---------------------------------------------------------------------------
 
 @app.errorhandler(Exception)
 def handle_exception(exc):
@@ -73,24 +139,21 @@ def index():
 
 @app.route("/rooms", methods=["GET"])
 def list_rooms():
-    files = sorted(
-        [f for f in os.listdir(ROOMS_DIR) if f.endswith(".jpg")],
-        key=lambda f: os.path.getmtime(os.path.join(ROOMS_DIR, f)),
-        reverse=True,  # newest first
-    )
-    return jsonify({"rooms": files})
+    files = storage_list()
+    rooms = [{"filename": f, "url": storage_url(f)} for f in files]
+    return jsonify({"rooms": rooms})
 
 
 @app.route("/rooms/<filename>")
 def serve_room(filename):
+    if USE_R2:
+        return redirect(storage_url(filename))
     return send_from_directory(ROOMS_DIR, filename)
 
 
 @app.route("/rooms/<filename>", methods=["DELETE"])
 def delete_room(filename):
-    path = os.path.join(ROOMS_DIR, filename)
-    if os.path.exists(path):
-        os.remove(path)
+    storage_delete(filename)
     return jsonify({"ok": True})
 
 
@@ -112,7 +175,6 @@ def process():
     rug_data, rug_mime = _resize_for_api(rug_data)
     room_data, room_mime = _resize_for_api(room_data)
 
-    # Save the room scene for future reuse
     saved_room_filename = _save_room(room_data)
 
     try:
