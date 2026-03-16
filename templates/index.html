@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Rug Compositor</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <main>
+    <h1>Rug Compositor</h1>
+    <p class="subtitle">Upload a rug product shot and a room scene — Gemini will swap the rug in.</p>
+
+    <form id="upload-form" novalidate>
+      <div class="drop-row">
+        <!-- Rug drop zone -->
+        <div class="drop-zone" id="zone-rug" data-field="rug">
+          <input type="file" id="input-rug" name="rug" accept="image/*" hidden />
+          <div class="drop-icon">🖼</div>
+          <p class="drop-label">Rug product shot</p>
+          <p class="drop-hint">Drag &amp; drop or click to browse</p>
+          <img class="preview" id="preview-rug" alt="Rug preview" />
+        </div>
+
+        <!-- Room drop zone -->
+        <div class="room-col">
+          <div class="drop-zone" id="zone-room" data-field="room">
+            <input type="file" id="input-room" name="room" accept="image/*" hidden />
+            <div class="drop-icon">🛋</div>
+            <p class="drop-label">Room scene</p>
+            <p class="drop-hint">Drag &amp; drop or click to browse</p>
+            <img class="preview" id="preview-room" alt="Room preview" />
+          </div>
+
+          <!-- Saved rooms gallery -->
+          <div id="saved-rooms-section" hidden>
+            <p class="saved-rooms-label">Previously used rooms</p>
+            <div id="saved-rooms-grid"></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="prompt-group">
+        <label for="prompt-input">Prompt <span class="prompt-hint">(edit to adjust the instruction sent to Gemini)</span></label>
+        <textarea id="prompt-input" name="prompt" rows="4">You are a photorealistic image compositor. I will give you two images: Image 1 is an overhead product shot of a rug. Image 2 is a room scene that already contains a rug on the floor. Your task: replace the existing rug in the room scene with the rug from Image 1. Match the perspective, lighting, shadows, and scale of the original rug precisely so the result looks photorealistic. Return only the composited room scene image with no text, annotations, or borders.</textarea>
+      </div>
+
+      <button type="submit" id="submit-btn" disabled>Composite Rug</button>
+    </form>
+
+    <section id="result-section" hidden>
+      <h2>Result</h2>
+      <img id="result-img" alt="Composited room scene" />
+      <div id="result-text"></div>
+      <a id="download-link" download="composited-room.png">Download image</a>
+    </section>
+
+    <div id="error-box" hidden></div>
+
+    <div id="spinner" hidden>
+      <div class="spinner-ring"></div>
+      <p>Compositing with Gemini…</p>
+    </div>
+  </main>
+
+  <script>
+    const form = document.getElementById("upload-form");
+    const submitBtn = document.getElementById("submit-btn");
+    const spinner = document.getElementById("spinner");
+    const resultSection = document.getElementById("result-section");
+    const resultImg = document.getElementById("result-img");
+    const resultText = document.getElementById("result-text");
+    const downloadLink = document.getElementById("download-link");
+    const errorBox = document.getElementById("error-box");
+    const savedRoomsSection = document.getElementById("saved-rooms-section");
+    const savedRoomsGrid = document.getElementById("saved-rooms-grid");
+
+    const MAX_DIM = 2048;
+    const files = { rug: null, room: null };
+
+    function updateSubmitState() {
+      submitBtn.disabled = !(files.rug && files.room);
+    }
+
+    function resizeImage(file) {
+      return new Promise((resolve) => {
+        const img = new Image();
+        const url = URL.createObjectURL(file);
+        img.onload = () => {
+          URL.revokeObjectURL(url);
+          let { width, height } = img;
+          if (Math.max(width, height) > MAX_DIM) {
+            if (width >= height) { height = Math.round(height * MAX_DIM / width); width = MAX_DIM; }
+            else { width = Math.round(width * MAX_DIM / height); height = MAX_DIM; }
+          }
+          const canvas = document.createElement("canvas");
+          canvas.width = width; canvas.height = height;
+          canvas.getContext("2d").drawImage(img, 0, 0, width, height);
+          canvas.toBlob(resolve, "image/jpeg", 0.92);
+        };
+        img.src = url;
+      });
+    }
+
+    function showPreview(fieldName, dataUrl) {
+      const preview = document.getElementById(`preview-${fieldName}`);
+      const zone = document.getElementById(`zone-${fieldName}`);
+      preview.src = dataUrl;
+      preview.hidden = false;
+      zone.classList.add("has-file");
+    }
+
+    async function handleFile(field, file) {
+      if (!file || !file.type.startsWith("image/")) return;
+      const zone = document.getElementById(`zone-${field}`);
+      zone.classList.add("resizing");
+      const blob = await resizeImage(file);
+      files[field] = blob;
+      const reader = new FileReader();
+      reader.onload = (e) => showPreview(field, e.target.result);
+      reader.readAsDataURL(blob);
+      zone.classList.remove("resizing");
+      updateSubmitState();
+    }
+
+    // Select a saved room by fetching it as a blob
+    async function selectSavedRoom(filename) {
+      const res = await fetch(`/rooms/${filename}`);
+      const blob = await res.blob();
+      files.room = blob;
+      const url = URL.createObjectURL(blob);
+      showPreview("room", url);
+      // highlight selected thumbnail
+      document.querySelectorAll(".room-thumb").forEach(t => t.classList.remove("selected"));
+      document.querySelector(`.room-thumb[data-filename="${filename}"]`)?.classList.add("selected");
+      updateSubmitState();
+    }
+
+    async function deleteRoom(filename, thumbEl) {
+      await fetch(`/rooms/${filename}`, { method: "DELETE" });
+      thumbEl.remove();
+      // hide section if no rooms left
+      if (savedRoomsGrid.children.length === 0) savedRoomsSection.hidden = true;
+      // clear room selection if it was the active one
+      if (files.room && thumbEl.classList.contains("selected")) {
+        files.room = null;
+        document.getElementById("preview-room").hidden = true;
+        document.getElementById("zone-room").classList.remove("has-file");
+        updateSubmitState();
+      }
+    }
+
+    function renderSavedRooms(roomFiles) {
+      savedRoomsGrid.innerHTML = "";
+      if (roomFiles.length === 0) { savedRoomsSection.hidden = true; return; }
+      savedRoomsSection.hidden = false;
+      roomFiles.forEach(filename => {
+        const wrap = document.createElement("div");
+        wrap.className = "room-thumb";
+        wrap.dataset.filename = filename;
+
+        const img = document.createElement("img");
+        img.src = `/rooms/${filename}`;
+        img.alt = "Saved room";
+        img.addEventListener("click", () => selectSavedRoom(filename));
+
+        const del = document.createElement("button");
+        del.className = "thumb-delete";
+        del.title = "Remove";
+        del.textContent = "×";
+        del.addEventListener("click", (e) => { e.stopPropagation(); deleteRoom(filename, wrap); });
+
+        wrap.appendChild(img);
+        wrap.appendChild(del);
+        savedRoomsGrid.appendChild(wrap);
+      });
+    }
+
+    async function loadSavedRooms() {
+      const res = await fetch("/rooms");
+      const data = await res.json();
+      renderSavedRooms(data.rooms);
+    }
+
+    // Wire up each drop zone
+    document.querySelectorAll(".drop-zone").forEach((zone) => {
+      const field = zone.dataset.field;
+      const input = document.getElementById(`input-${field}`);
+
+      zone.addEventListener("click", () => input.click());
+
+      zone.addEventListener("dragover", (e) => {
+        e.preventDefault();
+        zone.classList.add("drag-over");
+      });
+
+      zone.addEventListener("dragleave", () => zone.classList.remove("drag-over"));
+
+      zone.addEventListener("drop", (e) => {
+        e.preventDefault();
+        zone.classList.remove("drag-over");
+        handleFile(field, e.dataTransfer.files[0]);
+      });
+
+      input.addEventListener("change", () => handleFile(field, input.files[0]));
+    });
+
+    // Form submission
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      errorBox.hidden = true;
+      resultSection.hidden = true;
+      spinner.hidden = false;
+      submitBtn.disabled = true;
+
+      const prompt = document.getElementById("prompt-input").value.trim();
+      const formData = new FormData();
+      formData.append("rug", files.rug, "rug.jpg");
+      formData.append("room", files.room, "room.jpg");
+      formData.append("prompt", prompt);
+
+      try {
+        const res = await fetch("/process", { method: "POST", body: formData });
+        const data = await res.json();
+
+        if (!res.ok || data.error) {
+          throw new Error(data.error || `Server error ${res.status}`);
+        }
+
+        resultImg.src = data.image;
+        downloadLink.href = data.image;
+        resultText.textContent = data.text || "";
+        resultSection.hidden = false;
+        resultSection.scrollIntoView({ behavior: "smooth" });
+
+        // Refresh the saved rooms gallery with the newly saved room
+        if (data.saved_room) loadSavedRooms();
+      } catch (err) {
+        errorBox.textContent = `Error: ${err.message}`;
+        errorBox.hidden = false;
+      } finally {
+        spinner.hidden = true;
+        submitBtn.disabled = false;
+      }
+    });
+
+    // Load saved rooms on page load
+    loadSavedRooms();
+  </script>
+</body>
+</html>
