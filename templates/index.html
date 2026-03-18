@@ -3,12 +3,12 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Rug Compositor</title>
+  <title>Image Generator</title>
   <link rel="stylesheet" href="/static/style.css" />
 </head>
 <body>
   <main>
-    <h1>Rug Compositor</h1>
+    <h1>Image Generator</h1>
     <p class="subtitle">Upload a rug product shot and a room scene — Gemini will swap the rug in.</p>
 
     <form id="upload-form" novalidate>
@@ -45,7 +45,7 @@
         <textarea id="prompt-input" name="prompt" rows="4">You are a photorealistic image compositor. I will give you two images: Image 1 is an overhead product shot of a rug. Image 2 is a room scene that already contains a rug on the floor. Your task: replace the existing rug in the room scene with the rug from Image 1. Match the perspective, lighting, shadows, and scale of the original rug precisely so the result looks photorealistic. Return only the composited room scene image with no text, annotations, or borders.</textarea>
       </div>
 
-      <button type="submit" id="submit-btn" disabled>Composite Rug</button>
+      <button type="submit" id="submit-btn" disabled>Generate image</button>
     </form>
 
     <section id="result-section" hidden>
